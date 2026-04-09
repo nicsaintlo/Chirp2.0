@@ -1,0 +1,383 @@
+use regex::Regex;
+use std::sync::OnceLock;
+
+/// Pre-compiled regex patterns for text cleanup
+struct CleanupRegexes {
+    fillers: Vec<Regex>,
+    correction: Regex,
+    dangling_comma: Regex,
+    leading_comma: Regex,
+    whitespace: Regex,
+    sentence_end: Regex,
+    standalone_i: Regex,
+    i_contraction: Regex,
+    punctuation: Vec<(Regex, &'static str)>,
+    space_before_punct: Regex,
+    no_space_after: Regex,
+    email: Regex,
+    numeric_contexts: Vec<Regex>,
+    number_words: Vec<&'static str>,
+    percentage: Regex,
+    hundred_pct: Regex,
+}
+
+fn regexes() -> &'static CleanupRegexes {
+    static REGEXES: OnceLock<CleanupRegexes> = OnceLock::new();
+    REGEXES.get_or_init(|| {
+        let filler_patterns = [
+            r"(?i)\bum+\b",
+            r"(?i)\buh+\b",
+            r"(?i)\buh huh\b",
+            r"(?i)\bmm+ ?hmm+\b",
+            r"(?i)\bhmm+\b",
+            r"(?i)\byou know\b(?=\s*,?\s)",
+            r"(?i)\blike\b(?=\s+(the|a|an|i|we|they|he|she|it|my|our|this|that)\b)",
+            r"(?i)\bbasically\b(?=\s*,)",
+            r"(?i)\bactually\b(?=\s*,)",
+            r"(?i)\bso\b(?=\s*,\s)",
+            r"(?i)\bi mean\b(?=\s*,)",
+            r"(?i)\bkind of\b(?=\s+(like|a|the)\b)",
+            r"(?i)\bsort of\b(?=\s+(like|a|the)\b)",
+            r"(?i)\bright\s*\?\s*(?=\b)",
+        ];
+
+        let number_word_patterns = [
+            (r"\b(?i)zero\b", "0"),
+            (r"\b(?i)one\b", "1"),
+            (r"\b(?i)two\b", "2"),
+            (r"\b(?i)three\b", "3"),
+            (r"\b(?i)four\b", "4"),
+            (r"\b(?i)five\b", "5"),
+            (r"\b(?i)six\b", "6"),
+            (r"\b(?i)seven\b", "7"),
+            (r"\b(?i)eight\b", "8"),
+            (r"\b(?i)nine\b", "9"),
+            (r"\b(?i)ten\b", "10"),
+        ];
+
+        let numeric_context_patterns = [
+            r"(?i)\b(number|step|item|option|version|v|chapter|page|line|row|column|level|grade|score|count|total)\s+",
+            r"(?i)\b(is|are|was|were|equals?|=)\s+",
+            r"(?i)\b(about|around|approximately|roughly|nearly|over|under)\s+",
+        ];
+
+        // Pre-compile combined numeric context + number word patterns
+        let mut compiled_contexts = Vec::new();
+        let mut compiled_numbers = Vec::new();
+        for ctx_pattern in &numeric_context_patterns {
+            for (word_pattern, digit) in &number_word_patterns {
+                let combined = format!("({ctx_pattern})({word_pattern})");
+                if let Ok(re) = Regex::new(&combined) {
+                    compiled_contexts.push(re);
+                    compiled_numbers.push(*digit);
+                }
+            }
+        }
+
+        let punctuation_map: Vec<(Regex, &'static str)> = [
+            (r"(?i)\bperiod\b", "."),
+            (r"(?i)\bcomma\b", ","),
+            (r"(?i)\bquestion mark\b", "?"),
+            (r"(?i)\bexclamation (?:mark|point)\b", "!"),
+            (r"(?i)\bcolon\b", ":"),
+            (r"(?i)\bsemicolon\b", ";"),
+            (r"(?i)\bdash\b", " —"),
+            (r"(?i)\bhyphen\b", "-"),
+            (r"(?i)\bopen (?:paren|parenthesis)\b", "("),
+            (r"(?i)\bclose (?:paren|parenthesis)\b", ")"),
+            (r"(?i)\bnew line\b", "\n"),
+            (r"(?i)\bnew paragraph\b", "\n\n"),
+        ]
+        .iter()
+        .filter_map(|(p, r)| Regex::new(p).ok().map(|re| (re, *r)))
+        .collect();
+
+        // Store pre-compiled context+number pairs as parallel vecs in the struct
+        // We'll use numeric_contexts for the compiled combined regexes
+        // and number_words for the corresponding digit strings
+        CleanupRegexes {
+            fillers: filler_patterns
+                .iter()
+                .filter_map(|p| Regex::new(p).ok())
+                .collect(),
+            correction: Regex::new(
+                r"(?i).*\b(?:wait(?:\s+no)?|no\s+wait|oh\s+wait|actually\s+(?:wait|no)|(?:oh\s+)?no\s+(?:actually|i\s+mean[st]?)|(?:wait\s+)?i\s+mean[st]?|or\s+(?:rather|actually)|scratch\s+that|never\s*mind|sorry)\s*,?\s*"
+            ).unwrap(),
+            dangling_comma: Regex::new(r",\s*,").unwrap(),
+            leading_comma: Regex::new(r"^\s*,\s*").unwrap(),
+            whitespace: Regex::new(r"\s{2,}").unwrap(),
+            sentence_end: Regex::new(r"([.!?])\s+([a-z])").unwrap(),
+            standalone_i: Regex::new(r"\bi\b").unwrap(),
+            i_contraction: Regex::new(r"\bI'([msdtv])").unwrap(),
+            punctuation: punctuation_map,
+            space_before_punct: Regex::new(r"\s+([.,!?;:)])").unwrap(),
+            no_space_after: Regex::new(r"([.,!?;:])([A-Za-z])").unwrap(),
+            email: Regex::new(r"(?i)\b(\w+)\s+at\s+(\w+)\s+dot\s+(com|org|net|io|dev|co)\b").unwrap(),
+            numeric_contexts: compiled_contexts,
+            number_words: compiled_numbers,
+            percentage: Regex::new(r"(?i)\b(twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\s+percent\b").unwrap(),
+            hundred_pct: Regex::new(r"(?i)\b(one )?hundred percent\b").unwrap(),
+        }
+    })
+}
+
+/// Full cleanup pipeline: filler removal → regex formatting
+pub fn cleanup_text(text: &str, smart_formatting: bool) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+
+    // Step 1: Remove filler words
+    let cleaned = remove_fillers(text);
+
+    // Step 2: Strip self-corrections — keep only the final intent
+    let cleaned = strip_corrections(&cleaned);
+
+    if !smart_formatting {
+        return capitalize_first(&cleaned);
+    }
+
+    // Step 3: Regex-based formatting (spoken punctuation, numbers, etc.)
+    smart_format(&cleaned)
+}
+
+/// Remove common filler words from transcript
+fn remove_fillers(text: &str) -> String {
+    let re = regexes();
+    let mut result = text.to_string();
+
+    for filler in &re.fillers {
+        result = filler.replace_all(&result, "").to_string();
+    }
+
+    // Clean up extra whitespace and dangling commas from removal
+    result = re.dangling_comma.replace_all(&result, ",").to_string();
+    result = re.leading_comma.replace(&result, "").to_string();
+    re.whitespace.replace_all(result.trim(), " ").to_string()
+}
+
+/// Strip everything before a self-correction signal, keeping only the final intent.
+/// "let's meet at 3 oh wait let's meet at 2" → "let's meet at 2"
+fn strip_corrections(text: &str) -> String {
+    let re = regexes();
+    let result = re.correction.replace(text, "").to_string();
+    let trimmed = result.trim();
+    if trimmed.is_empty() {
+        // Correction signal ate everything (e.g. "scratch that") — return empty
+        return String::new();
+    }
+    trimmed.to_string()
+}
+
+/// Capitalize the first character of a string
+fn capitalize_first(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut chars = trimmed.chars();
+    let first = chars.next().unwrap();
+    first.to_uppercase().to_string() + chars.as_str()
+}
+
+/// Smart formatting: punctuation, capitalization, numbers, common patterns
+fn smart_format(text: &str) -> String {
+    let re = regexes();
+    let mut result = text.to_string();
+
+    // Expand spoken numbers to digits for common cases
+    result = format_spoken_numbers(&result);
+
+    // Format common spoken patterns
+    result = format_spoken_patterns(&result);
+
+    // Capitalize first letter
+    result = capitalize_first(&result);
+
+    // Add period at end if missing punctuation
+    let trimmed = result.trim_end();
+    if !trimmed.is_empty() {
+        let last = trimmed.chars().last().unwrap();
+        if !matches!(last, '.' | '!' | '?' | ':' | ';' | '"' | ')') {
+            result = format!("{trimmed}.");
+        }
+    }
+
+    // Capitalize after sentence-ending punctuation
+    result = re
+        .sentence_end
+        .replace_all(&result, |caps: &regex::Captures| {
+            format!("{} {}", &caps[1], caps[2].to_uppercase())
+        })
+        .to_string();
+
+    // Capitalize "i" as standalone word
+    result = re.standalone_i.replace_all(&result, "I").to_string();
+    // Fix I contractions
+    result = re
+        .i_contraction
+        .replace_all(&result, |caps: &regex::Captures| {
+            format!("I'{}", &caps[1])
+        })
+        .to_string();
+
+    result
+}
+
+/// Convert spoken number words to digits for common short numbers
+fn format_spoken_numbers(text: &str) -> String {
+    let re = regexes();
+    let mut result = text.to_string();
+
+    // Apply pre-compiled combined context+number patterns
+    for (i, ctx_re) in re.numeric_contexts.iter().enumerate() {
+        let digit = re.number_words[i];
+        result = ctx_re
+            .replace_all(&result, |caps: &regex::Captures| {
+                format!("{}{}", &caps[1], digit)
+            })
+            .to_string();
+    }
+
+    // Percentages
+    result = re
+        .percentage
+        .replace_all(&result, |caps: &regex::Captures| {
+            let num = match caps[1].to_lowercase().as_str() {
+                "twenty" => "20",
+                "thirty" => "30",
+                "forty" => "40",
+                "fifty" => "50",
+                "sixty" => "60",
+                "seventy" => "70",
+                "eighty" => "80",
+                "ninety" => "90",
+                _ => &caps[1],
+            };
+            format!("{num}%")
+        })
+        .to_string();
+
+    // "hundred percent" → "100%"
+    result = re.hundred_pct.replace_all(&result, "100%").to_string();
+
+    result
+}
+
+/// Format common spoken patterns (email, URLs, punctuation commands)
+fn format_spoken_patterns(text: &str) -> String {
+    let re = regexes();
+    let mut result = text.to_string();
+
+    // Spoken punctuation → actual punctuation
+    for (pattern, replacement) in &re.punctuation {
+        result = pattern.replace_all(&result, *replacement).to_string();
+    }
+
+    // Clean up spaces before punctuation
+    result = re.space_before_punct.replace_all(&result, "$1").to_string();
+
+    // Ensure space after punctuation
+    result = re.no_space_after.replace_all(&result, "$1 $2").to_string();
+
+    // Email pattern
+    result = re.email.replace_all(&result, "$1@$2.$3").to_string();
+
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_remove_fillers() {
+        let input = "um so, uh I want to go to the store";
+        let result = remove_fillers(input);
+        assert!(!result.contains("um"));
+        assert!(!result.contains("uh"));
+        assert!(result.contains("I want to go to the store"));
+    }
+
+    #[test]
+    fn test_capitalize_i() {
+        let result = smart_format("i want to go and i need help");
+        assert!(result.contains("I want"));
+        assert!(result.contains("I need"));
+    }
+
+    #[test]
+    fn test_sentence_ending() {
+        let result = smart_format("hello world");
+        assert!(result.ends_with('.'));
+    }
+
+    #[test]
+    fn test_spoken_punctuation() {
+        let result = smart_format("hello comma how are you question mark");
+        assert!(result.contains("Hello, how are you?"));
+    }
+
+    #[test]
+    fn test_percentage() {
+        let result = smart_format("it was about fifty percent done");
+        assert!(result.contains("50%"));
+    }
+
+    #[test]
+    fn test_email() {
+        let result = smart_format("send it to john at example dot com");
+        assert!(result.contains("john@example.com"));
+    }
+
+    #[test]
+    fn test_new_paragraph() {
+        let result = smart_format("hello new paragraph world");
+        assert!(result.contains("\n\n"));
+    }
+
+    #[test]
+    fn test_correction_wait_i_mean() {
+        let result = strip_corrections("let's meet at 3 pm wait I mean 2 pm");
+        assert_eq!(result, "2 pm");
+    }
+
+    #[test]
+    fn test_correction_oh_wait() {
+        let result = strip_corrections("let's meet at 3 pm oh wait let's meet at 2 pm");
+        assert_eq!(result, "let's meet at 2 pm");
+    }
+
+    #[test]
+    fn test_correction_actually() {
+        let result = strip_corrections("the meeting is Tuesday or actually Wednesday");
+        assert_eq!(result, "Wednesday");
+    }
+
+    #[test]
+    fn test_correction_no_i_mean() {
+        let result = strip_corrections("send it to John no I mean send it to Mike");
+        assert_eq!(result, "send it to Mike");
+    }
+
+    #[test]
+    fn test_correction_scratch_that() {
+        let result = strip_corrections("add the thing scratch that");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_no_correction() {
+        let result = strip_corrections("hello world this is normal text");
+        assert_eq!(result, "hello world this is normal text");
+    }
+
+    #[test]
+    fn test_full_cleanup() {
+        let result = cleanup_text("um i want to uh send an email to bob at test dot com", true);
+        assert!(result.starts_with("I"));
+        assert!(result.contains("bob@test.com"));
+        assert!(!result.contains("um"));
+        assert!(!result.contains("uh"));
+    }
+}

@@ -1,0 +1,71 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Training artifacts (keep scripts, ignore model weights and intermediate data)
+training/data/*.log
+training/data/test_sample.jsonl
+training/output/chirp-cleanup/
+training/output/onnx/encoder_model.onnx
+training/output/onnx/decoder_model.onnx
+training/output/onnx/decoder_with_past_model.onnx
+training/output/qwen-lora/
+training/output/qwen3-0-6b-lora/
+training/output/llama_cpp_tools/
+training/output/*.log
+training/output/overnight*.log
+training/venv/
+training/.venv/
+training/__pycache__/
+
+# GGUF model files and training outputs — large binaries, not committed
+chirp-benchmark-models/
+training/models/
+training/output/
+
+# Benchmark downloaded models
+chirp-benchmark-models/
+
+# Debug output
+err.txt
+err_dev.txt
+
+# Native shared libraries (downloaded at build time)
+src-tauri/sherpa-onnx-lib/macos/*.dylib
+
+# Secrets / env
+.env
+scripts/.env
+
+# Claude Code local settings
+.claude/
+
+# Rust build
+target/
+
+# Superpowers brainstorm artifacts
+.superpowers/
+
+# Flat DLL copies for Windows bundling
+src-tauri/*.dll

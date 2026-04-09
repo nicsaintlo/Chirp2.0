@@ -1,0 +1,113 @@
+import { useEffect, useState } from 'react'
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import { primaryMonitor } from '@tauri-apps/api/window'
+import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi'
+import { useAppStore } from '../../stores/appStore'
+import { useAudio } from '../../hooks/useAudio'
+import { useRecording } from '../../hooks/useRecording'
+import { BirdMark } from '../shared/BirdMark'
+import { Listening } from './Listening'
+import { Processing } from './Processing'
+import { Polishing } from './Polishing'
+import { Done } from './Done'
+import { Error } from './Error'
+
+// Window stays the same size for both states — no jarring resize
+const WIN_W = 300
+const WIN_H = 64
+const OFFSET = 80
+
+export function Overlay() {
+  const status = useAppStore((s) => s.status)
+  const autoDismiss = useAppStore((s) => s.autoDismissOverlay)
+  const setStatus = useAppStore((s) => s.setStatus)
+  const position = useAppStore((s) => s.overlayPosition)
+  const showPassive = useAppStore((s) => s.showPassiveOverlay)
+  const hotkeyStatus = useAppStore((s) => s.hotkeyStatus)
+  const [dismissing, setDismissing] = useState(false)
+
+  useAudio()
+  useRecording()
+
+  const isActive = status !== 'idle'
+  const shouldShow = isActive || showPassive
+
+  // Always reposition when position changes (even if hidden)
+  useEffect(() => {
+    const win = getCurrentWindow()
+    primaryMonitor().then(async (monitor) => {
+      if (!monitor) return
+      const sf = monitor.scaleFactor
+      const screenW = monitor.size.width / sf
+      const screenH = monitor.size.height / sf
+
+      const x = Math.round((screenW - WIN_W) / 2)
+      const y = position === 'top'
+        ? OFFSET
+        : Math.round(screenH - OFFSET - WIN_H)
+
+      await win.setSize(new LogicalSize(WIN_W, WIN_H))
+      await win.setPosition(new LogicalPosition(x, y))
+      await win.setIgnoreCursorEvents(true)
+    })
+  }, [position])
+
+  // Show/hide separately
+  useEffect(() => {
+    const win = getCurrentWindow()
+    if (shouldShow) {
+      win.show()
+    } else {
+      win.hide()
+    }
+  }, [shouldShow])
+
+  // Auto-dismiss after done/error state
+  useEffect(() => {
+    const delay = status === 'done' && autoDismiss ? 1200 : status === 'error' ? 2000 : null
+    if (delay === null) return
+
+    const timer = setTimeout(() => {
+      setDismissing(true)
+      setTimeout(() => {
+        setStatus('idle')
+        setDismissing(false)
+      }, 200)
+    }, delay)
+    return () => clearTimeout(timer)
+  }, [status, autoDismiss, setStatus])
+
+  if (!shouldShow) return null
+
+  return (
+    <div className="pointer-events-none flex h-screen w-screen items-center justify-center">
+      {/* Single pill that morphs between passive and active */}
+      <div
+        className={`flex items-center rounded-full transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] backdrop-blur-xl ${
+          isActive
+            ? 'h-11 gap-3 border border-chirp-amber-200/30 bg-white/90 px-4 shadow-[0_2px_16px_rgba(245,158,11,0.08),0_0_0_3px_rgba(245,158,11,0.05)]'
+            : 'h-9 gap-2 border border-chirp-amber-200/30 bg-white/90 px-2.5 shadow-[0_1px_4px_rgba(0,0,0,0.05)]'
+        } ${dismissing ? 'opacity-0 scale-95' : 'opacity-100 scale-100'}`}
+      >
+        <BirdMark size={isActive ? 24 : 18} className={
+          isActive
+            ? 'text-chirp-amber-500'
+            : hotkeyStatus === 'failed'
+              ? 'text-red-400'
+              : hotkeyStatus === 'retrying'
+                ? 'text-chirp-amber-400 animate-pulse'
+                : 'text-chirp-stone-400'
+        } />
+        {isActive && (
+          <div className="animate-fade-in flex items-center">
+            {status === 'listening' && <Listening />}
+            {status === 'processing' && <Processing />}
+            {status === 'polishing' && <Polishing />}
+            {status === 'done' && <Done />}
+            {status === 'error' && <Error />}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

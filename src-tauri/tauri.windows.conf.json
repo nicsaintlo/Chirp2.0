@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "resources": [],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      }
+    }
+  }
+}
