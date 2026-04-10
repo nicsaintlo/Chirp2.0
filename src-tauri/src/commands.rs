@@ -951,17 +951,8 @@ pub async fn request_accessibility_permission() -> Result<(), String> {
 // ── System-level key capture ──────────────────────────────────────────
 
 #[tauri::command]
-pub async fn capture_next_key(
-    state: State<'_, crate::state::SharedState>,
-    app_handle: AppHandle,
-) -> Result<crate::hotkey::CapturedKey, String> {
-    let result = crate::hotkey::capture_next_key().await;
-    // Resume the main hotkey grab after capture
-    let s = state.lock().await;
-    let hotkey_str = s.settings.hotkey.clone();
-    drop(s);
-    let _ = crate::hotkey::start(&hotkey_str, app_handle);
-    result
+pub async fn capture_next_key() -> Result<crate::hotkey::CapturedKey, String> {
+    crate::hotkey::capture_next_key().await
 }
 
 // ── OAuth ──────────────────────────────────────────────────────────────
